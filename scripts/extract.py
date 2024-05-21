@@ -9,7 +9,7 @@ import pathlib
 
 import torch
 
-from esm import Alphabet, FastaBatchedDataset, ProteinBertModel, pretrained, MSATransformer
+from esm import FastaBatchedDataset, pretrained, MSATransformer
 
 
 def create_parser():
@@ -28,9 +28,9 @@ def create_parser():
         help="FASTA file on which to extract representations",
     )
     parser.add_argument(
-        "output_dir",
+        "output_file",
         type=pathlib.Path,
-        help="output directory for extracted representations",
+        help="output file for extracted representations",
     )
 
     parser.add_argument("--toks_per_batch", type=int, default=4096, help="maximum batch size")
@@ -78,13 +78,16 @@ def run(args):
     )
     print(f"Read {args.fasta_file} with {len(dataset)} sequences")
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    args.output_file.parent.mkdir(parents=True, exist_ok=True)
+    
     return_contacts = "contacts" in args.include
 
     assert all(-(model.num_layers + 1) <= i <= model.num_layers for i in args.repr_layers)
     repr_layers = [(i + model.num_layers + 1) % (model.num_layers + 1) for i in args.repr_layers]
 
     with torch.no_grad():
+        all_results = {}
         for batch_idx, (labels, strs, toks) in enumerate(data_loader):
             print(
                 f"Processing {batch_idx + 1} of {len(batches)} batches ({toks.size(0)} sequences)"
@@ -94,7 +97,6 @@ def run(args):
 
             out = model(toks, repr_layers=repr_layers, return_contacts=return_contacts)
 
-            logits = out["logits"].to(device="cpu")
             representations = {
                 layer: t.to(device="cpu") for layer, t in out["representations"].items()
             }
@@ -102,8 +104,6 @@ def run(args):
                 contacts = out["contacts"].to(device="cpu")
 
             for i, label in enumerate(labels):
-                args.output_file = args.output_dir / f"{label}.pt"
-                args.output_file.parent.mkdir(parents=True, exist_ok=True)
                 result = {"label": label}
                 truncate_len = min(args.truncation_seq_length, len(strs[i]))
                 # Call clone on tensors to ensure tensors are not views into a larger representation
@@ -125,11 +125,8 @@ def run(args):
                 if return_contacts:
                     result["contacts"] = contacts[i, : truncate_len, : truncate_len].clone()
 
-                torch.save(
-                    result,
-                    args.output_file,
-                )
-
+                all_results[label] = result
+    torch.save(all_results, args.output_file)
 
 def main():
     parser = create_parser()
@@ -138,3 +135,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
